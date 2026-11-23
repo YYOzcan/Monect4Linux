@@ -9,7 +9,10 @@ from . import __version__, server
 class DryRunHub:
     """Stand-in for InputHub that only logs what would be injected."""
 
-    def __getattr__(self, name):
+    def __init__(self) -> None:
+        self.pads: dict = {}
+
+    def _stub(self, name):
         log = logging.getLogger("dry-run")
 
         class _Any:
@@ -19,8 +22,21 @@ class DryRunHub:
             def __call__(self, *a, **k):
                 log.info("%s%s", name, a)
                 return self
-
         return _Any()
+
+    def pad(self, i):
+        logging.getLogger("dry-run").info("pad(%s,)", i)
+        return self.pads.setdefault(i, self._stub("pad"))
+
+    def dpad(self, i):
+        logging.getLogger("dry-run").info("dpad(%s,)", i)
+        return self.pads.setdefault(100 + i, self._stub("dpad"))
+
+    def unplug(self, i):
+        self.pads.pop(i, None)
+
+    def __getattr__(self, name):
+        return self._stub(name)
 
 
 def main() -> None:
@@ -37,6 +53,8 @@ def main() -> None:
     for noisy in ("aioice", "aiortc", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     if a.dry_run:
+        import os
+        os.environ["MONECT_DRYRUN"] = "1"
         server.InputHub = DryRunHub  # type: ignore[assignment]
     try:
         asyncio.run(server.run(a.name))

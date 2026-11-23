@@ -29,7 +29,22 @@ class Projector:
         self.adepack = Depacketizer()
 
     # ---- players -----------------------------------------------------------------
-    def _video_player(self) -> subprocess.Popen | None:
+    def _video_player(self):
+        import os
+        dump = os.environ.get("MONECT_PROJECTOR_DUMP")
+        if dump:                                   # test hook: write the stream to a file
+            if self.video is None:
+                class _F:
+                    def __init__(self, path):
+                        self.stdin = open(path, "wb")
+
+                    def poll(self):
+                        return None
+
+                    def terminate(self):
+                        pass
+                self.video = _F(dump)
+            return self.video
         if self.video and self.video.poll() is None:
             return self.video
         if shutil.which("ffplay"):
@@ -58,6 +73,12 @@ class Projector:
         elif codec != 0 and codec not in (OPUS,):
             log.info("projector audio codec %d not supported", codec)
             return False
+        import os
+        if os.environ.get("MONECT_PROJECTOR_DUMP"):
+            self.audio = subprocess.Popen(["cat"], stdin=subprocess.PIPE,
+                                          stdout=subprocess.DEVNULL)
+            self.rate, self.channels = rate, channels
+            return True
         self.audio = subprocess.Popen(
             ["pacat", "--playback", "--raw", "--format=s16le", f"--rate={rate}",
              f"--channels={channels}", "--latency-msec=60", "--client-name=Monect Projector"],
@@ -123,6 +144,7 @@ class Projector:
             if self.audio_dec is not None:
                 import av
                 for f in self.audio_dec.decode(av.Packet(frame)):
+                    self.audio_samples = getattr(self, "audio_samples", 0) + f.samples
                     pcm = f.to_ndarray()
                     if pcm.dtype.kind == "f":
                         pcm = (pcm.clip(-1, 1) * 32767).astype("<i2")
@@ -145,4 +167,5 @@ class Projector:
                 pass
             self.video = None
         self._stop_audio()
-        log.info("projector stopped")
+        log.info("projector stopped (%d audio samples played)", getattr(self, "audio_samples", 0))
+        self.audio_samples = 0

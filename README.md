@@ -80,7 +80,15 @@ journalctl --user -u monect-receiver -f
 
 [`PROTOCOL.md`](PROTOCOL.md) documents the LAN protocol (UDP discovery and
 handshake, WebRTC signaling tunnel, data-channel message formats) as
-reconstructed for interoperability. `tests/fake_phone.py` is a protocol
-self-test that plays the phone's role.
+reconstructed for interoperability.
+
+`tests/e2e.py` plays the phone exactly like the app does and checks 63 things
+end to end (connect, input, gamepads, DSU, remote desktop video/audio, files,
+task manager, games, projector, virtual camera, security):
+
+```bash
+MONECT_SCREEN_TEST=1 MONECT_PROJECTOR_DUMP=/tmp/p.h264 ./monect-receiver --dry-run > /tmp/rx.log &
+.venv/bin/python tests/e2e.py /tmp/rx.log /tmp/p.h264      # → 63/63 checks passed
+```
 
 License: MIT

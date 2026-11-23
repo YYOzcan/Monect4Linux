@@ -133,6 +133,9 @@ class GameCenter:
                     cmd = ["gtk-launch", os.path.basename(desk)]
             else:
                 return False
+            if os.environ.get("MONECT_DRYRUN"):
+                log.info("dry-run: would run %s", cmd)
+                return True
             subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
             return True

@@ -149,8 +149,11 @@ class FileExplorer:
             send(b"\x0b\x02" + bytes([ok]) + u16le(src))
         elif sub == 0x03:                                   # open on PC
             path, _ = wstr(b, 3)
-            subprocess.Popen(["xdg-open", to_linux(path)], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
+            if os.environ.get("MONECT_DRYRUN"):
+                log.info("dry-run: would open %s", to_linux(path))
+            else:
+                subprocess.Popen(["xdg-open", to_linux(path)], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
         elif sub == 0x07 and len(b) >= 3:                   # special folder paths
             n = min(struct.unpack(">H", b[1:3])[0], 7)
             body = b""
@@ -200,8 +203,9 @@ class FileExplorer:
     @staticmethod
     def _delete(p: str) -> bool:
         try:
-            if shutil.which("gio"):
-                return subprocess.run(["gio", "trash", p], timeout=10).returncode == 0
+            if shutil.which("gio") and subprocess.run(
+                    ["gio", "trash", p], timeout=10, capture_output=True).returncode == 0:
+                return True                       # moved to the trash (like the recycle bin)
             if os.path.isdir(p):
                 shutil.rmtree(p)
             else:

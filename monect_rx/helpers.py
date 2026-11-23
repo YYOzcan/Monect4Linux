@@ -46,6 +46,9 @@ def run(action: int) -> bool:
     log.info("helper action %d (%s) -> %s", action, NAMES.get(action, "?"), cmd)
     if not cmd:
         return False
+    import os
+    if os.environ.get("MONECT_DRYRUN"):
+        return True
     if cmd[:2] == ["loginctl", "terminate-user"]:
         import getpass
         cmd[2] = getpass.getuser()
