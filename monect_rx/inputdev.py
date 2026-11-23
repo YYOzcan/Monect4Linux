@@ -335,14 +335,24 @@ class InputHub:
             pad.close()
 
     def paste_text(self, text: str) -> None:
-        """Put text on the clipboard and press Ctrl+V."""
+        """Type text with the current keyboard layout; clipboard only for the rest."""
+        if not hasattr(self, "_typer"):
+            from .typer import Typer
+            self._typer = Typer()
+        rest = self._typer.type_text(self.kbd, text)
+        if not rest:
+            return
         for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"]):
             if shutil.which(cmd[0]):
-                subprocess.run(cmd, input=text.encode(), check=False, timeout=5)
+                subprocess.run(cmd, input=rest.encode(), check=False, timeout=5)
                 break
         else:
-            log.warning("no wl-copy/xclip available; cannot paste text")
-            return
+            q = shutil.which("qdbus6") or shutil.which("qdbus")
+            if not q:
+                log.warning("cannot type %r and no clipboard tool available", rest)
+                return
+            subprocess.run([q, "org.kde.klipper", "/klipper", "setClipboardContents", rest],
+                           check=False, timeout=5)
         self.kbd.tap(e.KEY_LEFTCTRL, e.KEY_V)
 
     def release_all(self) -> None:
