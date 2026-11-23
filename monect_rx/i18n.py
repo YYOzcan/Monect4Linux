@@ -8,6 +8,18 @@ S = {
     "tab_security": ("Güvenlik", "Security"),
     "tab_rd": ("Uzak masaüstü", "Remote desktop"),
     "tab_help": ("Yardım", "Help"),
+    "tab_ai": ("Monect AI", "Monect AI"),
+    "ai_info": ("Telefondaki Monect AI sohbeti bu bilgisayarda Claude ile yanıtlanır ve PC'yi "
+                "kontrol edebilir (uygulama açma, medya, ses, yazma; komutlar telefondan onayla). "
+                "Anahtar al: <a href='https://console.anthropic.com'>console.anthropic.com</a>",
+                "Monect AI chat on the phone is answered by Claude on this PC and can control it "
+                "(open apps, media, volume, typing; shell commands only after you approve on the "
+                "phone). Get a key at <a href='https://console.anthropic.com'>console.anthropic.com</a>"),
+    "ai_key": ("Claude API anahtarı", "Claude API key"),
+    "ai_remove": ("Anahtarı sil", "Remove key"),
+    "ai_key_set": ("✓ Anahtar kayıtlı", "✓ Key saved"),
+    "ai_env": ("✓ Ortamdaki kimlik bilgisi kullanılıyor", "✓ Using credentials from the environment"),
+    "ai_none": ("Anahtar yok – AI yanıt veremez", "No key – AI cannot answer"),
     "connecting_svc": ("Alıcı servisine bağlanılıyor…", "Connecting to the receiver service…"),
     "svc_ok": ("● Alıcı çalışıyor – telefon bağlanmaya hazır", "● Receiver running – ready for the phone"),
     "svc_down": ("● Alıcı servisi çalışmıyor (systemctl --user start monect-receiver)",

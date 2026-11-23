@@ -5,6 +5,7 @@ import logging
 import shutil
 import struct
 import subprocess
+import threading
 
 from evdev import AbsInfo, UInput, ecodes as e
 
@@ -189,6 +190,62 @@ class Keyboard:
         self.dev.close()
 
 
+class Pen:
+    """Pressure-sensitive stylus (tablet) covering the whole desktop."""
+
+    MAX = 32767
+
+    def __init__(self) -> None:
+        ax = AbsInfo(0, 0, self.MAX, 0, 0, 200)
+        caps = {e.EV_KEY: [e.BTN_TOOL_PEN, e.BTN_TOOL_RUBBER, e.BTN_TOUCH, e.BTN_STYLUS,
+                           e.BTN_STYLUS2],
+                e.EV_ABS: [(e.ABS_X, ax), (e.ABS_Y, ax),
+                           (e.ABS_PRESSURE, AbsInfo(0, 0, 4095, 0, 0, 0)),
+                           (e.ABS_TILT_X, AbsInfo(0, -90, 90, 0, 0, 0)),
+                           (e.ABS_TILT_Y, AbsInfo(0, -90, 90, 0, 0, 0)),
+                           (e.ABS_DISTANCE, AbsInfo(0, 0, 255, 0, 0, 0))]}
+        self.dev = UInput(caps, name="Monect Pen", input_props=[e.INPUT_PROP_DIRECT],
+                          bustype=e.BUS_USB, vendor=0x056A, product=0x5000)
+        self.tool: int | None = None
+
+    def event(self, flags: int, fx: float, fy: float, eraser: bool, pressure: float,
+              orientation: float, tilt: float) -> None:
+        """flags: Windows POINTER_FLAG_* (0x2 in range, 0x4 in contact, 0x10/0x20 barrel buttons,
+        0x40000 up, 0x8000 canceled)."""
+        import math
+        w = self.dev.write
+        tool = e.BTN_TOOL_RUBBER if eraser else e.BTN_TOOL_PEN
+        in_range = bool(flags & 0x2) and not flags & 0x8000
+        contact = bool(flags & 0x4) and in_range
+        if self.tool is not None and (self.tool != tool or not in_range):
+            w(e.EV_KEY, e.BTN_TOUCH, 0)
+            w(e.EV_ABS, e.ABS_PRESSURE, 0)
+            w(e.EV_KEY, self.tool, 0)
+            self.dev.syn()
+            self.tool = None
+        if not in_range:
+            return
+        clamp = lambda v: max(0, min(self.MAX, int(v * self.MAX)))
+        if self.tool is None:
+            w(e.EV_KEY, tool, 1)
+            self.tool = tool
+        w(e.EV_ABS, e.ABS_X, clamp(fx))
+        w(e.EV_ABS, e.ABS_Y, clamp(fy))
+        w(e.EV_ABS, e.ABS_PRESSURE, int(max(0.0, min(1.0, pressure)) * 4095) if contact else 0)
+        deg = math.degrees(tilt) if tilt == tilt else 0.0
+        tx = deg * math.sin(orientation) if orientation == orientation else 0.0
+        ty = -deg * math.cos(orientation) if orientation == orientation else 0.0
+        w(e.EV_ABS, e.ABS_TILT_X, int(max(-90, min(90, tx))))
+        w(e.EV_ABS, e.ABS_TILT_Y, int(max(-90, min(90, ty))))
+        w(e.EV_KEY, e.BTN_STYLUS, 1 if flags & 0x10 else 0)
+        w(e.EV_KEY, e.BTN_STYLUS2, 1 if flags & 0x20 else 0)
+        w(e.EV_KEY, e.BTN_TOUCH, 1 if contact else 0)
+        self.dev.syn()
+
+    def close(self) -> None:
+        self.dev.close()
+
+
 class X360Pad:
     """Xbox 360 style pad fed with XUSB reports (same layout as XInput)."""
 
@@ -199,7 +256,7 @@ class X360Pad:
         (0x4000, e.BTN_NORTH), (0x8000, e.BTN_WEST),
     ]
 
-    def __init__(self, index: int) -> None:
+    def __init__(self, index: int, rumble=None) -> None:
         stick = AbsInfo(0, -32768, 32767, 16, 128, 0)
         trig = AbsInfo(0, 0, 255, 0, 0, 0)
         hat = AbsInfo(0, -1, 1, 0, 0, 0)
@@ -208,13 +265,54 @@ class X360Pad:
             e.EV_ABS: [(e.ABS_X, stick), (e.ABS_Y, stick), (e.ABS_RX, stick),
                        (e.ABS_RY, stick), (e.ABS_Z, trig), (e.ABS_RZ, trig),
                        (e.ABS_HAT0X, hat), (e.ABS_HAT0Y, hat)],
+            e.EV_FF: [e.FF_RUMBLE, e.FF_PERIODIC, e.FF_SQUARE, e.FF_TRIANGLE, e.FF_SINE,
+                      e.FF_GAIN],
         }
         # Microsoft X-Box 360 pad ids so games pick the right mapping
         self.dev = UInput(caps, name="Microsoft X-Box 360 pad (Monect)",
                           vendor=0x045E, product=0x028E, version=0x0110,
-                          bustype=e.BUS_USB)
+                          bustype=e.BUS_USB, max_effects=16)
         self.index = index
         self.last: tuple | None = None
+        self.rumble = rumble                   # callback(index, large 0..255, small 0..255)
+        self.effects: dict[int, tuple[int, int]] = {}
+        self.playing: set[int] = set()
+        self.closed = False
+        threading.Thread(target=self._ff_loop, daemon=True, name=f"ff{index}").start()
+
+    def _ff_loop(self) -> None:
+        """Force feedback from games: uploads/erases/plays -> rumble sent to the phone."""
+        try:
+            for ev in self.dev.read_loop():
+                if ev.type == e.EV_UINPUT and ev.code == e.UI_FF_UPLOAD:
+                    up = self.dev.begin_upload(ev.value)
+                    up.retval = 0
+                    eff = up.effect
+                    if eff.type == e.FF_RUMBLE:
+                        r = eff.u.ff_rumble_effect
+                        self.effects[eff.id] = (r.strong_magnitude >> 8, r.weak_magnitude >> 8)
+                    elif eff.type == e.FF_PERIODIC:
+                        mag = abs(eff.u.ff_periodic_effect.magnitude) >> 7
+                        self.effects[eff.id] = (min(mag, 255), min(mag, 255))
+                    self.dev.end_upload(up)
+                elif ev.type == e.EV_UINPUT and ev.code == e.UI_FF_ERASE:
+                    er = self.dev.begin_erase(ev.value)
+                    er.retval = 0
+                    self.effects.pop(er.effect_id, None)
+                    self.playing.discard(er.effect_id)
+                    self.dev.end_erase(er)
+                    self._update()
+                elif ev.type == e.EV_FF and ev.code in self.effects:
+                    (self.playing.add if ev.value else self.playing.discard)(ev.code)
+                    self._update()
+        except (OSError, ValueError):
+            pass                                     # device closed
+
+    def _update(self) -> None:
+        large = max((self.effects[i][0] for i in self.playing if i in self.effects), default=0)
+        small = max((self.effects[i][1] for i in self.playing if i in self.effects), default=0)
+        if self.rumble and not self.closed:
+            self.rumble(self.index, large, small)
 
     @staticmethod
     def _inv(v: int) -> int:
@@ -237,6 +335,7 @@ class X360Pad:
         self.dev.syn()
 
     def close(self) -> None:
+        self.closed = True
         self.dev.close()
 
 
@@ -289,7 +388,15 @@ class InputHub:
         self._kbd: Keyboard | None = None
         self._abs: AbsPointer | None = None
         self._touch: TouchScreen | None = None
-        self.pads: dict[int, X360Pad] = {}
+        self._pen: Pen | None = None
+        self.pads: dict = {}
+        self.rumble = None                     # set by the server: callback(index, large, small)
+
+    @property
+    def pen(self) -> Pen:
+        if self._pen is None:
+            self._pen = Pen()
+        return self._pen
 
     @property
     def touch(self) -> TouchScreen:
@@ -318,7 +425,7 @@ class InputHub:
     def pad(self, index: int) -> X360Pad:
         if index not in self.pads:
             log.info("plugging virtual Xbox 360 pad #%d", index)
-            self.pads[index] = X360Pad(index)
+            self.pads[index] = X360Pad(index, lambda *a: self.rumble and self.rumble(*a))
         return self.pads[index]
 
     def dpad(self, index: int) -> DInputPad:
@@ -362,10 +469,12 @@ class InputHub:
             self._kbd.release_all()
         if self._mouse:
             self._mouse.report(0, 0, 0, 0)
+        if self._pen:
+            self._pen.event(0, 0, 0, False, 0, 0, 0)
 
     def close(self) -> None:
         for idx in list(self.pads):
             self.unplug(idx)
-        for d in (self._mouse, self._kbd, self._abs, self._touch):
+        for d in (self._mouse, self._kbd, self._abs, self._touch, self._pen):
             if d:
                 d.close()

@@ -166,3 +166,20 @@ class H264CameraSink:
 
     def close(self) -> None:
         self.cam.close()
+
+
+def find_webcam() -> str | None:
+    """First real V4L2 capture device (skips our own v4l2loopback 'Monect Camera')."""
+    import glob
+    for dev in sorted(glob.glob("/sys/class/video4linux/video*")):
+        try:
+            name = open(dev + "/name").read().strip()
+            idx = int(open(dev + "/index").read().strip() or 0)
+        except (OSError, ValueError):
+            continue
+        if "Monect" in name or "loopback" in name.lower() or idx != 0:
+            continue                     # index 0 = the capture node of a UVC camera
+        node = "/dev/" + os.path.basename(dev)
+        if os.access(node, os.R_OK):
+            return node
+    return None

@@ -20,7 +20,8 @@ AAC, ADPCM, OPUS = 1, 2, 3
 
 
 class Projector:
-    def __init__(self) -> None:
+    def __init__(self, overlay=None) -> None:
+        self.overlay = overlay
         self.video: subprocess.Popen | None = None
         self.audio: subprocess.Popen | None = None
         self.audio_dec = None
@@ -105,6 +106,9 @@ class Projector:
             send(b"\x0a\x00")
         elif sub == 0x02:
             self.stop()
+            if self.overlay and getattr(self, "last_picture", None):
+                self.overlay.send(cmd="image_close")
+                self.last_picture = None
             send(b"\x0a\x03")
         elif sub == 0x01 and len(b) >= 7:
             func = struct.unpack_from("<H", b, 1)[0]
@@ -132,6 +136,14 @@ class Projector:
             elif func == 0:
                 log.info("projector functions offered: %s", payload.hex(" "))
                 send(b"\x0a\x02")
+            elif func == 3:                                  # show a photo uploaded by the phone
+                from .files import to_linux
+                path = to_linux(payload.decode("utf-16", "replace").lstrip("\ufeff")
+                                .split("\x00")[0])
+                log.info("picture projector: %s", path)
+                self.last_picture = path
+                if self.overlay:
+                    self.overlay.send(cmd="image", path=path)
             else:
                 log.debug("projector func %d (%d bytes)", func, len(payload))
         else:

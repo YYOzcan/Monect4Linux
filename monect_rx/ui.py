@@ -133,6 +133,7 @@ class Window(QMainWindow):
         tabs.addTab(self._status_tab(), t("tab_status"))
         tabs.addTab(self._security_tab(), t("tab_security"))
         tabs.addTab(self._stream_tab(), t("tab_rd"))
+        tabs.addTab(self._ai_tab(), t("tab_ai"))
         tabs.addTab(self._help_tab(), t("tab_help"))
         self.setCentralWidget(tabs)
 
@@ -238,6 +239,35 @@ class Window(QMainWindow):
         form.addRow(btn)
         return w
 
+    def _ai_tab(self) -> QWidget:
+        w = QWidget()
+        form = QFormLayout(w)
+        info = QLabel(t("ai_info"))
+        info.setWordWrap(True)
+        info.setOpenExternalLinks(True)
+        form.addRow(info)
+        self.ai_key = QLineEdit()
+        self.ai_key.setEchoMode(QLineEdit.Password)
+        self.ai_key.setPlaceholderText("sk-ant-…")
+        form.addRow(t("ai_key"), self.ai_key)
+        self.ai_state = QLabel()
+        form.addRow(self.ai_state)
+        row = QHBoxLayout()
+        save = QPushButton(t("apply"))
+        save.clicked.connect(self._save_ai_key)
+        clear = QPushButton(t("ai_remove"))
+        clear.clicked.connect(lambda: self.app.set({"ai_api_key": ""}))
+        row.addWidget(save)
+        row.addWidget(clear)
+        form.addRow(row)
+        return w
+
+    def _save_ai_key(self) -> None:
+        key = self.ai_key.text().strip()
+        if key:
+            self.app.set({"ai_api_key": key})
+            self.ai_key.clear()
+
     def _help_tab(self) -> QWidget:
         tb = QTextBrowser()
         tb.setOpenExternalLinks(True)
@@ -297,6 +327,8 @@ class Window(QMainWindow):
         self.br_slider.setValue(int(s.get("bitrate", 8_000_000)) // 1_000_000)
         i = self.fps_combo.findData(int(s.get("max_fps", 60)))
         self.fps_combo.setCurrentIndex(max(i, 0))
+        self.ai_state.setText(t("ai_key_set") if s.get("ai_key_set") else
+                              t("ai_env") if s.get("ai_configured") else t("ai_none"))
 
     def closeEvent(self, ev) -> None:                  # close to tray
         ev.ignore()

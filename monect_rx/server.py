@@ -35,7 +35,7 @@ from . import signaling as sig
 from .audio import ADPCM, MIC_OPUS, OPUS, PCM, AudioStreamer, format_reply
 from .media import H264CameraSink, VirtualCamera, VirtualMic, consume
 from .taskmgr import TaskManager
-from . import dsu
+from . import dsu, vprojector
 from .control import ControlServer
 import hashlib
 from .files import FileExplorer
@@ -44,6 +44,8 @@ from .games import GameCenter
 from . import helpers
 from .inputdev import InputHub
 from .packetizer import Packetizer
+from .ai import AIAgent
+from .blackboard import Blackboard, Overlay
 from .screen import ScreenStreamer, StartRequest, monitors_payload
 
 log = logging.getLogger("monect")
@@ -58,13 +60,16 @@ CAPABILITIES = {
                  "wheel": True, "threeButtons": True},
     "keyboard": {"hidBootReport": True, "scanCodes": True},
     "remoteDesktop": {"videoH264": True, "videoHevc": True, "monitorsInfo": True,
-                      "audioPcm": True, "audioOpus": True},
-    "gamepad": {"management": True, "x360Input": True, "dinputInput": True, "dsuInput": True},
+                      "monitorSwitch": True, "audioPcm": True, "audioOpus": True},
+    "gamepad": {"management": True, "x360Input": True, "dinputInput": True, "dsuInput": True,
+                "forceFeedback": True},
     "microphone": {"streamToHost": True},
     "camera": {"uvcForward": True},
     "taskManager": {"webRtc": True},
     "gameCenter": {"listGames": True, "launchGame": True},
-    "projector": {"screen": True, "audio": True},
+    "projector": {"screen": True, "audio": True, "mediaFiles": True},
+    "blackboard": {"webRtc": True},
+    "aiAgent": {"chat": True},
     "clipboard": {"pasteText": True},
     "mediaKeys": {"consumerControl": True},
     "fileExplorer": {"browse": True},
@@ -244,6 +249,7 @@ class RtcSession:
             t.cancel()
         self.pending.clear()
         await self.pc.close()
+        self.server.blackboard.leave(self)
         self.server.input.release_all()
         await self.server.stop_streams()
 
@@ -264,8 +270,15 @@ class MonectServer(asyncio.DatagramProtocol):
         self.taskmgr: TaskManager | None = None
         self.cameras: dict[int, dict] = {}
         self.pad_flags = [1, 1, 1]
+        self.pc_camera: ScreenStreamer | None = None
+        self.pad_ch = None            # phone that manages the pads (gets rumble)
+        self.input.rumble = self._rumble
         self.dsu: dsu.DSUServer | None = None
-        self.projector = Projector()
+        self.overlay = Overlay()
+        self.projector = Projector(self.overlay)
+        self.blackboard = Blackboard(self.overlay)
+        self.vprojector = None
+        self.ai = AIAgent(self.settings, self.input)
         self.settings = load_settings()
         if self.settings.get("name"):
             self.hostname = self.settings["name"]
@@ -447,6 +460,10 @@ class MonectServer(asyncio.DatagramProtocol):
                 None, self.taskmgr.handle, body, lambda d: self._threadsafe(send, d))
         elif cat == 0x08 and body:
             send(b"\x11\x00" + self.shell_execute(body).to_bytes(4, "big", signed=True))
+        elif cat == 0x0C and body:
+            self.blackboard.handle(sess, ch, body)
+        elif cat == 0x09 and body:
+            self.ai.handle(sess, ch, body)
         elif cat == 0x0A:
             reply = b"\x14\x01" + json.dumps(CAPABILITIES, separators=(",", ":")).encode()
             log.info("capability query -> %d bytes", len(reply))
@@ -522,16 +539,49 @@ class MonectServer(asyncio.DatagramProtocol):
             ch.send(b"\x03\x05" + handle.to_bytes(8, "big"))
         elif sub in (0x03, 0x04):                          # list virtual cameras
             ch.send(b"\x03\x08" + json.dumps([c["info"] for c in self.cameras.values()]).encode())
+        elif sub == 0x01 and self.pc_camera is not None:   # stop PC webcam
+            asyncio.ensure_future(self.stop_pc_camera(ch))
         elif sub == 0x06 or sub == 0x01:                   # stop
             for c in self.cameras.values():
                 c["sink"].close()
             self.cameras.clear()
             ch.send(b"\x03\x06" if sub == 0x06 else b"\x03\x03")
         elif sub == 0x00:                                  # PC webcam -> phone
-            log.info("PC camera requested %s; no capture device", hexdump(b))
-            ch.send(b"\x03\x04")                         # "no camera found"
+            asyncio.ensure_future(self.start_pc_camera(ch, b))
         else:
             log.info("camera sub=0x%02x %s", sub, hexdump(b))
+
+    async def start_pc_camera(self, ch, b: bytes) -> None:
+        """03 00 00 01 viewW viewH -> 03 00 started, then 08 + seq-framed H.264."""
+        from .media import find_webcam
+        dev = find_webcam()
+        test = bool(os.environ.get("MONECT_CAMERA_TEST"))
+        if dev is None and not test:
+            log.info("PC camera requested; no capture device")
+            ch.send(b"\x03\x04")                       # "no camera found"
+            return
+        if self.pc_camera is not None:
+            await self.pc_camera.stop()
+        vw = struct.unpack(">I", b[3:7])[0] if len(b) >= 7 else 1280
+        vh = struct.unpack(">I", b[7:11])[0] if len(b) >= 11 else 720
+        w, h = (1280, 720) if max(vw, vh) >= 1000 else (640, 480)
+        pk = Packetizer(0x08, ch.send)
+        self.pc_camera = ScreenStreamer(pk.push, dict(self.settings, bitrate=3_000_000),
+                                        CONFIG_DIR / "screencast.token",
+                                        buffered=lambda: getattr(ch, "bufferedAmount", 0))
+        try:
+            ok = await self.pc_camera.start_camera(dev, w, h, 30)
+        except Exception as ex:
+            log.warning("PC camera failed: %s", ex)
+            ok = False
+        log.info("PC camera %s -> phone %dx%d: %s", dev or "test pattern", w, h, ok)
+        ch.send(b"\x03\x00" if ok else b"\x03\x02")
+
+    async def stop_pc_camera(self, ch) -> None:
+        cam, self.pc_camera = self.pc_camera, None
+        if cam:
+            await cam.stop()
+        ch.send(b"\x03\x03")
 
     def on_auth(self, ch, b: bytes) -> None:
         asyncio.ensure_future(self._auth(ch, b))
@@ -622,9 +672,18 @@ class MonectServer(asyncio.DatagramProtocol):
         s.setdefault("remember_devices", True)
         s["name"] = self.hostname
         s["has_password"] = bool(s.pop("password_sha256", "") or s.pop("password", ""))
+        key = s.pop("ai_api_key", "")
+        s["ai_key_set"] = bool(key)
+        s["ai_configured"] = self.ai.configured()
         return s
 
     def update_settings(self, new: dict) -> None:
+        if "ai_api_key" in new:
+            key = str(new["ai_api_key"] or "").strip()
+            if key:
+                self.settings["ai_api_key"] = key
+            else:
+                self.settings.pop("ai_api_key", None)
         for k in ("security", "bitrate", "max_fps", "remember_devices", "password", "name",
                   "language"):
             if k in new:
@@ -642,7 +701,7 @@ class MonectServer(asyncio.DatagramProtocol):
         if new.get("clear_trusted"):
             self.settings["trusted"] = []
         self.save_settings()
-        log.info("settings updated: %s", {k: v for k, v in self.settings.items() if not k.startswith("password") and k != "trusted"})
+        log.info("settings updated: %s", {k: v for k, v in self.settings.items() if not k.startswith("password") and k not in ("trusted", "ai_api_key")})
 
     def save_settings(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -695,7 +754,11 @@ class MonectServer(asyncio.DatagramProtocol):
                 self.screen.request_keyframe()
         elif sub == 0x05:
             idx = m[2] if len(m) > 2 else 0
-            ch.send(bytes([0x01, 0x07, idx]))             # switching not supported (portal picks)
+            ok = bool(self.screen) and await self.screen.switch(idx)
+            cur = self.screen.current_monitor() if self.screen else 0
+            log.info("switch to monitor %d: %s", idx, "ok" if ok else
+                     "not shared (pick more screens in the share dialog)")
+            ch.send(bytes([0x01, 0x07, cur]))
         else:
             log.info("screen sub=0x%02x %s", sub, hexdump(m))
 
@@ -778,7 +841,16 @@ class MonectServer(asyncio.DatagramProtocol):
             if p[1] == 0:
                 hub.dpad(p[0]).report(p[2:23])
         elif sub == 0x05 and p:                               # gamepad management
+            self.pad_ch = ch
             self.on_gamepad_mgmt(ch, p)
+        elif sub == 0x0B and len(p) >= 36:                    # pen / stylus
+            flags = struct.unpack_from(">I", p, 0)[0]
+            fx, fy = struct.unpack_from(">ff", p, 4)
+            tool = struct.unpack_from(">I", p, 12)[0]
+            pressure, orient, tilt = struct.unpack_from(">fff", p, 20)
+            if self.screen:
+                fx, fy = self.screen.map_abs(fx, fy)
+            hub.pen.event(flags, fx, fy, tool == 4, pressure, orient, tilt)
         elif sub == 0x06 and len(p) >= 4:                     # paste text
             self.on_paste(sess, b)
         elif sub == 0x09 and len(p) >= 2:                     # consumer keys
@@ -832,6 +904,20 @@ class MonectServer(asyncio.DatagramProtocol):
         else:
             log.info("gamepad mgmt op=0x%02x %s", op, hexdump(p))
 
+    def _rumble(self, index: int, large: int, small: int) -> None:
+        """Force feedback from a game (any thread) -> 04 01 pad large small on the phone."""
+        def send():
+            ch = self.pad_ch
+            if ch is not None and getattr(ch, "readyState", "open") == "open":
+                try:
+                    ch.send(bytes([0x04, 0x01, index & 0xFF, large & 0xFF, small & 0xFF]))
+                except Exception:
+                    pass
+        try:
+            self.loop.call_soon_threadsafe(send)
+        except RuntimeError:
+            pass
+
     def _pad_status(self) -> bytes:
         nx = sum(1 for k in self.input.pads if k < 100)
         nd = sum(1 for k in self.input.pads if k >= 100)
@@ -865,6 +951,9 @@ class MonectServer(asyncio.DatagramProtocol):
         if self.mic:
             await self.mic.stop()
         self.projector.stop()
+        if self.pc_camera:
+            await self.pc_camera.stop()
+            self.pc_camera = None
         for c in self.cameras.values():
             c["sink"].close()
         self.cameras.clear()
@@ -872,6 +961,7 @@ class MonectServer(asyncio.DatagramProtocol):
 
     def close(self) -> None:
         self.input.close()
+        self.overlay.close()
 
 
 async def run(hostname: str | None = None) -> None:
@@ -880,6 +970,7 @@ async def run(hostname: str | None = None) -> None:
     transport, _ = await loop.create_datagram_endpoint(
         lambda: server, local_addr=("0.0.0.0", CONTROL_PORT), allow_broadcast=True)
     server.dsu = await dsu.start()
+    server.vprojector = await vprojector.start()
     await server.control.start()
     try:
         await asyncio.Event().wait()

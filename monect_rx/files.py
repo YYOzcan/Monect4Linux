@@ -36,7 +36,9 @@ def xdg_dir(name: str, fallback: str) -> str:
 
 # ids used by the app: AppData, Desktop, Pictures, Documents, Downloads, Music, Videos
 SPECIAL = [
-    lambda: os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")),
+    # "AppData": the phone stages projector pictures in AppData\temp
+    lambda: os.path.join(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")),
+                         "monect4linux"),
     lambda: xdg_dir("DESKTOP", "Desktop"),
     lambda: xdg_dir("PICTURES", "Pictures"),
     lambda: xdg_dir("DOCUMENTS", "Documents"),

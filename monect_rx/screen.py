@@ -51,6 +51,9 @@ class StartRequest:
 
 def monitors() -> list[dict]:
     """Logical monitor geometry from kscreen-doctor (KDE), best effort."""
+    if os.environ.get("MONECT_SCREEN_TEST"):
+        return [{"x": 0, "y": 0, "w": 1280, "h": 720, "primary": True, "name": "T1"},
+                {"x": 1280, "y": 0, "w": 1280, "h": 720, "primary": False, "name": "T2"}]
     out = []
     if shutil.which("kscreen-doctor"):
         try:
@@ -119,6 +122,8 @@ class ScreenStreamer:
         self.token_file = token_file
         self.session: ScreenCastSession | None = None
         self.stream: Stream | None = None
+        self.streams: list[Stream] = []
+        self.camera_src = ""
         self.thread = None
         self.running_flag = False
         self.paused = False
@@ -136,22 +141,71 @@ class ScreenStreamer:
     def request_keyframe(self) -> None:
         self.force_idr = True
 
-    async def start(self, req: StartRequest) -> bool:
+    async def start(self, req: StartRequest, monitor: int | None = None) -> bool:
         await self.stop()
         self.req = req
         self.loop = asyncio.get_running_loop()
         test = bool(os.environ.get("MONECT_SCREEN_TEST"))
         if test:
-            s = Stream(-1, 0, 1280, 720, 0, 0, None)
+            self.streams = [Stream(-1, 0, 1280, 720, 0, 0, None),
+                            Stream(-1, 1, 1280, 720, 1280, 0, None)]
         else:
             try:
                 self.session = ScreenCastSession(self.token_file)
-                self.stream = await self.loop.run_in_executor(None, self.session.start)
+                self.streams = await self.loop.run_in_executor(None, self.session.start_all)
             except Exception as ex:
                 log.error("screen capture unavailable: %s", ex)
                 self.session = None
                 return False
-            s = self.stream
+        idx = self.stream_for_monitor(monitor) if monitor is not None else None
+        self.stream = self.streams[idx if idx is not None else 0]
+        self._open(self.stream)
+        return True
+
+    def stream_for_monitor(self, monitor: int) -> int | None:
+        """Index into self.streams of the shared stream showing monitor #monitor."""
+        mons = monitors()
+        if not 0 <= monitor < len(mons):
+            return None
+        m = mons[monitor]
+        for i, st in enumerate(self.streams):
+            if (st.x, st.y) == (m["x"], m["y"]):
+                return i
+        return monitor if len(self.streams) == len(mons) else None
+
+    def current_monitor(self) -> int:
+        mons = monitors()
+        for i, m in enumerate(mons):
+            if self.stream and (m["x"], m["y"]) == (self.stream.x, self.stream.y):
+                return i
+        return 0
+
+    async def switch(self, monitor: int) -> bool:
+        """Show another shared monitor without asking the portal again."""
+        idx = self.stream_for_monitor(monitor)
+        if idx is None or not self.streams or self.req is None:
+            return False
+        if self.streams[idx] is self.stream:
+            return True
+        await self._close_pipeline()
+        self.stream = self.streams[idx]
+        self._open(self.stream)
+        return True
+
+    async def start_camera(self, device: str | None, w: int, h: int, fps: int = 30) -> bool:
+        """Stream a V4L2 webcam (device None = test pattern) with the same encoder."""
+        await self.stop()
+        self.loop = asyncio.get_running_loop()
+        self.req = StartRequest(codec=0, monitor=0, fps=fps, max_w=w, max_h=h, flags_tail=0,
+                                raw=b"")
+        self.camera_src = (f"v4l2src device={device} ! decodebin" if device else
+                           "videotestsrc is-live=true pattern=smpte")
+        self._open(Stream(-1, -1, w, h, 0, 0, None))
+        return True
+
+    def _open(self, s: Stream) -> None:
+        req = self.req
+        test = s.session is None
         self.geom = (s.x, s.y, s.width or 1920, s.height or 1080)
         w, h = self.geom[2], self.geom[3]
         if req.max_w >= 320 and req.max_h >= 240:
@@ -166,7 +220,9 @@ class ScreenStreamer:
         gi.require_version("Gst", "1.0")
         from gi.repository import Gst
         Gst.init(None)
-        src = ("videotestsrc is-live=true pattern=ball" if test else
+        src = (self.camera_src if s.node_id == -1 else
+               f"videotestsrc is-live=true pattern={'ball' if s.node_id == 0 else 'smpte'}"
+               if test else
                f"pipewiresrc fd={s.fd} path={s.node_id} do-timestamp=true keepalive-time=1000 "
                "always-copy=true")
         desc = (f"{src} ! videoconvert n-threads=4 ! videoscale ! "
@@ -181,7 +237,6 @@ class ScreenStreamer:
         self.thread = threading.Thread(target=self._worker, args=(w, h, fps), daemon=True,
                                        name="rd-encoder")
         self.thread.start()
-        return True
 
     def _make_encoder(self, w: int, h: int, fps: int):
         import av
@@ -305,7 +360,7 @@ class ScreenStreamer:
         log.info("video stream ended (%d sent, %d skipped)", self.stats["sent"],
                  self.stats["dropped"])
 
-    async def stop(self) -> None:
+    async def _close_pipeline(self) -> None:
         self.running_flag = False
         if self.thread:
             await asyncio.get_running_loop().run_in_executor(None, self.thread.join, 2)
@@ -314,12 +369,17 @@ class ScreenStreamer:
             from gi.repository import Gst
             self.pipeline.set_state(Gst.State.NULL)
             self.pipeline = None
+
+    async def stop(self) -> None:
+        await self._close_pipeline()
         if self.stream:
-            try:
-                os.close(self.stream.fd)
-            except OSError:
-                pass
+            if self.stream.fd >= 0:
+                try:
+                    os.close(self.stream.fd)
+                except OSError:
+                    pass
             self.stream = None
+        self.streams = []
         if self.session:
             self.session.close()
             self.session = None
