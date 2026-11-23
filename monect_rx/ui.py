@@ -159,8 +159,8 @@ class Window(QMainWindow):
         self.ip_lbl.setFont(big)
         form.addRow(t("ip"), self.ip_lbl)
         self.lang_combo = QComboBox()
-        self.lang_combo.addItem("Türkçe", "tr")
         self.lang_combo.addItem("English", "en")
+        self.lang_combo.addItem("Türkçe", "tr")
         self.lang_combo.activated.connect(self._lang_changed)
         form.addRow(t("language"), self.lang_combo)
         self.autostart = QCheckBox(t("autostart"))
@@ -288,7 +288,7 @@ class Window(QMainWindow):
         self.service_lbl.setStyleSheet("font-weight: bold; color: #cf222e")
 
     def show_settings(self, s: dict) -> None:
-        i = self.lang_combo.findData(s.get("language", "tr" if LANG_IS_TR() else "en"))
+        i = self.lang_combo.findData(s.get("language", "en"))
         self.lang_combo.setCurrentIndex(max(i, 0))
         btn = self.sec_buttons.get(s.get("security", "open"))
         if btn:

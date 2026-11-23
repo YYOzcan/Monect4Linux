@@ -1,8 +1,6 @@
 """Tiny TR/EN string table for the desktop UI."""
 from __future__ import annotations
 
-import locale
-import os
 
 S = {
     "app": ("Monect4Linux", "Monect4Linux"),
@@ -90,8 +88,7 @@ def detect(pref: str | None = None) -> None:
     if pref in ("tr", "en"):
         LANG = 0 if pref == "tr" else 1
         return
-    loc = (os.environ.get("LANG") or locale.getlocale()[0] or "en").lower()
-    LANG = 0 if loc.startswith("tr") else 1
+    LANG = 1                      # default: English (Turkish selectable in the UI)
 
 
 def t(key: str) -> str:
