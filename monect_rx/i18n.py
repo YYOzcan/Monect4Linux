@@ -18,6 +18,8 @@ S = {
     "save": ("Kaydet", "Save"),
     "ip": ("IP adresi:", "IP address:"),
     "language": ("Dil:", "Language:"),
+    "autostart": ("Bilgisayar açılınca (oturum açılınca) otomatik başlat",
+                  "Start automatically when I log in"),
     "devices": ("Bağlı cihazlar:", "Connected devices:"),
     "col_device": ("Cihaz", "Device"),
     "col_app": ("Uygulama", "App"),

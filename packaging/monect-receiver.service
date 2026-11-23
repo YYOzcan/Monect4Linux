@@ -4,7 +4,7 @@ After=graphical-session.target network-online.target
 PartOf=graphical-session.target
 
 [Service]
-ExecStart=@DIR@/monect-receiver --debug
+ExecStart=@DIR@/monect-receiver
 Restart=on-failure
 RestartSec=3
 

@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QByteArray, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap, QPen
@@ -26,6 +27,32 @@ from .i18n import detect, t
 def LANG_IS_TR() -> bool:
     return i18n.LANG == 0
 
+
+
+AUTOSTART = Path.home() / ".config/autostart/monect4linux.desktop"
+MENU_ENTRY = Path.home() / ".local/share/applications/monect4linux.desktop"
+
+
+def autostart_enabled() -> bool:
+    r = subprocess.run(["systemctl", "--user", "is-enabled", "monect-receiver"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() == "enabled" and AUTOSTART.exists()
+
+
+def set_autostart(on: bool) -> None:
+    """Enable/disable the receiver service and the tray app at login."""
+    subprocess.run(["systemctl", "--user", "enable" if on else "disable", "monect-receiver"],
+                   capture_output=True)
+    if on:
+        AUTOSTART.parent.mkdir(parents=True, exist_ok=True)
+        src = MENU_ENTRY.read_text() if MENU_ENTRY.exists() else (
+            "[Desktop Entry]\nType=Application\nName=Monect4Linux\n"
+            f"Exec={Path(sys.argv[0]).resolve()}\n")
+        lines = [l + " --hidden" if l.startswith("Exec=") and "--hidden" not in l else l
+                 for l in src.splitlines()]
+        AUTOSTART.write_text("\n".join(lines) + "\n")
+    else:
+        AUTOSTART.unlink(missing_ok=True)
 
 
 def make_icon(connected: bool) -> QIcon:
@@ -136,6 +163,10 @@ class Window(QMainWindow):
         self.lang_combo.addItem("English", "en")
         self.lang_combo.activated.connect(self._lang_changed)
         form.addRow(t("language"), self.lang_combo)
+        self.autostart = QCheckBox(t("autostart"))
+        self.autostart.setChecked(autostart_enabled())
+        self.autostart.toggled.connect(set_autostart)
+        form.addRow(self.autostart)
         v.addLayout(form)
         v.addWidget(QLabel(t("devices")))
         self.table = QTableWidget(0, 4)

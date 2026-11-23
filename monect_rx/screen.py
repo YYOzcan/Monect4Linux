@@ -225,6 +225,7 @@ class ScreenStreamer:
         nv12 = enc.pix_fmt == "nv12"
         interval = 1.0 / fps
         last_sent = 0.0
+        next_due = 0.0
         last_frame = None
         t0 = time.monotonic()
         congested = False
@@ -247,8 +248,11 @@ class ScreenStreamer:
                 continue                     # screen static and nothing requested
             if self.paused or last_frame is None:
                 continue
-            if now - last_sent < interval * 0.9 and not self.force_idr:
-                continue                     # cap to requested fps
+            # frame pacing: deadline scheduler (no random drops when the source
+            # already runs at the requested rate, smooth cap when it is faster)
+            if not self.force_idr and now < next_due - interval * 0.5:
+                continue
+            next_due = max(next_due + interval, now - interval)
             # back-pressure: skip frames while the channel is congested
             queued = self.buffered()
             st_q = max(st_q, queued)

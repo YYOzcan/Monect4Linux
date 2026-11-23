@@ -74,6 +74,18 @@ CAPABILITIES = {
 AUTH_OK = b"\x09\x00\x01" + PROTOCOL_VERSION.to_bytes(4, "big")
 
 
+_seen_unknown: set = set()
+
+
+def log_once(kind: str, msg: str, *args) -> None:
+    """Log an unknown/unhandled message type only the first time it is seen."""
+    if kind in _seen_unknown:
+        log.debug(msg, *args)
+        return
+    _seen_unknown.add(kind)
+    log.info(msg + " (further ones logged at debug level)", *args)
+
+
 def hexdump(b: bytes, n: int = 64) -> str:
     s = b[:n].hex(" ")
     return s + (f" …(+{len(b) - n})" if len(b) > n else "")
@@ -294,7 +306,7 @@ class MonectServer(asyncio.DatagramProtocol):
                 else:
                     log.warning("helper action from unpaired %s ignored", addr[0])
             else:
-                log.info("udp %s:%d op=0x%02x %s", addr[0], addr[1], op, hexdump(data))
+                log_once(f"udp{op}", "udp %s op=0x%02x %s", addr[0], op, hexdump(data))
         except Exception:
             log.exception("error handling udp packet from %s: %s", addr, hexdump(data))
 
@@ -440,7 +452,7 @@ class MonectServer(asyncio.DatagramProtocol):
             log.info("capability query -> %d bytes", len(reply))
             send(reply)
         else:
-            log.info("dc[%s] cat=0x%02x %s", ch.label, cat, hexdump(data))
+            log_once(f"dc{cat}", "data channel cat=0x%02x %s", cat, hexdump(data))
 
     @staticmethod
     def shell_execute(b: bytes) -> int:
@@ -774,7 +786,7 @@ class MonectServer(asyncio.DatagramProtocol):
         elif sub == 0x0D and len(p) >= 2:                     # single scancode
             hub.kbd.scancode(p[0], bool(p[1] & 1), bool(p[1] & 2))
         else:
-            log.info("input sub=0x%02x %s", sub, hexdump(b))
+            log_once(f"in{sub}", "input sub=0x%02x %s", sub, hexdump(b))
 
     def on_gamepad_mgmt(self, ch, p: bytes) -> None:
         """op 0: (type, maxIndex) pairs -> plug up to that index;
@@ -842,7 +854,7 @@ class MonectServer(asyncio.DatagramProtocol):
         if len(buf) >= text_len:
             text = bytes(buf[:text_len]).decode("utf-16-le", "replace").split("\x00", 1)[0]
             del sess.paste_buf[key]
-            log.info("paste text (%d chars)", len(text))
+            log.debug("paste text (%d chars)", len(text))
             self.input.paste_text(text)
 
     async def stop_streams(self) -> None:

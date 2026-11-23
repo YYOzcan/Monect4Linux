@@ -173,7 +173,7 @@ class FileExplorer:
             wp, wn = u16le(path), u16le(name)
             send(b"\x0b\x01" + struct.pack(">I", len(wp)) + wp + struct.pack(">I", len(wn)) + wn)
         else:
-            log.info("file op 0x%02x %s", sub, b[:48].hex(" "))
+            log.debug("file op 0x%02x %s", sub, b[:48].hex(" "))
 
     async def list_dir(self, path: str, send) -> None:
         if path in ("\\", "", "/"):
