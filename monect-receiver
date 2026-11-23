@@ -1,0 +1,5 @@
+#!/bin/sh
+# Monect4Linux - receiver service
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+export PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}"
+exec "$DIR/.venv/bin/python" -m monect_rx "$@"

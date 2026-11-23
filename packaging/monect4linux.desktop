@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Monect4Linux
+GenericName=PC Remote Receiver
+GenericName[tr]=PC Remote Alıcısı
+Comment=Control this PC from the Monect PC Remote phone app
+Comment[tr]=Bu bilgisayarı Monect PC Remote telefon uygulamasıyla kontrol et
+Exec=@DIR@/monect-receiver-ui
+Icon=input-gaming
+Categories=Utility;Network;RemoteAccess;
+Terminal=false
+StartupWMClass=monect-receiver

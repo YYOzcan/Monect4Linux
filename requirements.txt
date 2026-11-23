@@ -1,0 +1,5 @@
+aiortc>=1.9
+evdev>=1.6
+psutil>=5.9
+numpy>=1.24
+PySide6-Essentials>=6.6

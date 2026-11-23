@@ -1,0 +1,12 @@
+[Unit]
+Description=Monect4Linux - PC Remote receiver
+After=graphical-session.target network-online.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=@DIR@/monect-receiver --debug
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
